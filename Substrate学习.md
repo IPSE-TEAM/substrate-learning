@@ -1264,6 +1264,8 @@ Treasury模块提供一个资金池，能够由抵押者们来管理，在这个
 - `kick`:将一个实体从候选池和会员中移除，退还存款。
 - `change_member_count`:改变候选人，进入会员成员中。
 
+核心代码：
+
 	decl_event!(
 		pub enum Event<T, I=DefaultInstance> where
 			<T as system::Trait>::AccountId,
@@ -1330,6 +1332,8 @@ Generic Asset模块提供了处理多账号和资产余额的方法。
 - Reserved Balance:保留余额。
 - Imbalance:不平衡。
 - Lock:资产锁。
+
+核心代码：
 
 	/// Asset creation options
 	pub struct AssetOptions<Balance: HasCompact, AccountId> {
