@@ -1564,18 +1564,93 @@ getMiningInfo
 
 - height: (integer) 下一个区块的高度
 - generationSignature (string) 现在区块生成的签名
-- baseTarget (string) 现在区块base target
+- baseTarget (string) 现在区块base target，用来衡量全网总容量，也就是全网总算力，如果BaseTarget越小，说明全网容量越大。
 - targetDeadline (number) 最大可接受的deadline
 
 submitNonce
 
-- account_id: (u64)
-- nonce: (u64)
+- account_id: (u64) 又可以称为Plotter ID，通过账号来P盘，是通过Curve25519算法来生成的字符串，又可以称为passphrase。
+- nonce: (u64) 每一个nonce提供一个deadline，4个nonces是1M大小，每一个deadline是一个64bit无符号整数，是在0到2^64-1的范围内。deadlines是均匀且独立同分布的IID。扫描deadlines意味着寻找最小的deadline（best deadline）。
 - height: (u64)
 - block: (u64)
 - deadline_unadjusted: (u64)
 - deadline: (u64)
 - gen_sig: ([u8;32])
+
+plotfile存储的hash数据：
+
+哈希数据有两个维度，分为行和列。每个数据列由两个32字节的哈希数据组成，总共64字节。每一行都有一个名为nonce的“行号”，总共有4096个列，256KiB。散列数据存储在plot文件中。
+
+这些hash数据是由shabal256算法生成的。
+
+	net difficulty(t) =  4398046511104 / 240 / baseTarget(t)
+	genesis_base_target =  4398046511104 / 240 
+	genesis_base_target = baseTarget(0)
+	the expected minimum deadline of such a distribution is E(X) = (b+a*n)/(n+1)
+	(a,b) is the range of possibile values for a deadline,n is the number of deadlines being scanned. 
+	出块时间如果是240秒，那么希望E(X) = 240.
+	basetarget 取决于出块时间：
+	nonces = (2^64-1) / 240-1 = 76.861.433.640.456.500
+	Or in TiB: 76.861.433.640.456.500 / 4 / 1024 / 1024 = 18.325.193.796 TiB
+	
+
+Seek Trait
+
+提供一个游标，这个游标可以在字节流中移动。流通常具有固定的大小，允许相对于末端或当前偏移量进行查找。
+
+seek_addr = u64::from(scoop) * nonces as u64 * SCOOP_SIZE; // SCOOP_SIZE = 64
+
+Plot 
+
+	pub struct Plot {
+	    pub meta: Meta,
+	    pub path: String,
+	    pub fh: File,
+	    read_offset: u64,
+	    use_direct_io: bool,
+	    sector_size: u64,
+	    dummy: bool,
+	}
+	pub fn new()
+	pub fn prepare()
+	pub fn read()
+	pub fn seek_random()
+	
+
+poc_hashing
+
+	pub fn decode_gensig(gensig: &str) -> [u8;32]
+	pub fn calculate_scoop(height:u64,gensig: &[u8;32]) -> u32
+	pub fn find_best_deadline_rust(data: &[u8],number_of_nonces: u64,gensig: &[u8;32]) -> (u64,u64)
+	
+	
+shabal256
+
+	hash = shabal256_hash_fast(data,term) // data: [u8;64]  term: [u32,16]
+	
+	
+第一步，get_mining_info()
+
+第二步，根据signature和height计算scoop
+
+第三步，根据height，block，base_target，scoop，signature来扫描读取
+
+第四步，扫描出来nonce_data，计算出来的deadline，这个deadline比已经算出来的都要小，更新然后提交submit_nonce
+
+### 算法流程：
+
+- 第一步：钱包将通过Shabal256 hash function运行上一代签名和上一代区块生产者账号来创建新一代签名。
+- 第二步：签名给到矿工，跟baseTarget和下一个区块高度。
+- 第三步：在下一步中，通过对生成签名和从钱包接收到的区块高度运行Shabal256函数，矿工将生成下一个区块的生成散列。
+- 第四步：生成散列用作modulo 4096函数的参数，以便获得将用于处理plot文件的scoop编号。
+- 第五步：在scoop编号被计算之后，它被用来读取所有plot文件中所有nonces中的所有scoops，对于所有nonces的处理是单独完成的，通过使用新生成的签名通过Shabal256散列函数运行所有nonces。其结果是一个称为target的散列。目标除以步骤(2)中从钱包中获得的基本目标。除法结果的前8个字节为截止日期。
+- 第六步：为了防止所谓的“nonce垃圾邮件”，矿工将检查最新发现的截止日期是否低于目前发现的最低截止日期，并继续进行，直到找到一个较低的截止日期。矿池通常会设置一个最大的截止日期限制(即池所接受的最大截止日期值)，超过这个限制的截止日期将被池丢弃，用于历史份额计算。矿工将把最后期限提交给钱包，连同绑定到plot文件的数字帐户ID，以及包含用于生成最后期限的scoop数据的nonce number。在单独挖掘的情况下，从矿工传递到钱包的信息还将包括绑定到plot文件的帐户的秘密密码(对于池挖掘，使用池帐户的密码)。
+- 第七步：当钱包收到矿工的信息后，它将创建nonce来查找和验证矿工提交的最后期限。如果验证了最后期限，钱包将等待最后期限过期。
+- 第八步：并检查新的有效块是否已经在网络上公布。
+- 第九步：如果矿工提交了新的信息(一个新的截止日期)，钱包将创建nonce来检查截止日期的有效性，如果新提交的截止日期低于之前的截止日期。如果是这种情况，钱包将使用较低的截止日期值(即等待它过期)。如果新的区块还没有公布，并且截止日期已经过期，钱包将会锻造一个新的区块。
+
+
+
 
 
 
