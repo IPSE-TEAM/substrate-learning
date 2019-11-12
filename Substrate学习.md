@@ -1701,7 +1701,7 @@ p盘： engraver_gpu -i 10790126960500947771 -s 1 -n 4100
 
 ### 矿工请求挖矿信息
 
-矿工向节点请求 `get_mine_info()` ，节点给矿工返回 `height`,`generation_signature`，`base_target`三个参数。
+矿工向节点请求 `get_mining_info()` ，节点给矿工返回 `height`,`generation_signature`，`base_target`三个参数。
 
 - height：下一区块高度。
 - generation_signature：生成签名，是根据先前区块merkle root hash和区块高度，生成签名长度为32字节。
@@ -1729,6 +1729,423 @@ shabal256(scoop.hash,generation_signature)生成目标哈希，称为target，Ta
 难题二：下一个区块高度和merkle root如何获取？
 
 难题三：pow如何接收矿工提交的挖矿信息？
+
+
+
+### core下的externalities模块
+
+### core下的primitives模块
+
+hashing.rs
+
+处理512位，256位的hash成目标摘要。
+
+BLAKE和BLAKE2，BLAKE-256和BLAKE-224使用32位字节，分别产生256位和224位的摘要。BLAKE-512和BLAKE-384分别使用64位字节，产生512位和384位的摘要。
+
+Curve25519/Ed25519/X25519是椭圆曲线加密/签名/密钥交换算法。ed25519用于签名。ed25519签名和验证的性能都很好，签名很小，只有64字节，公钥只有32字节
+
+KeyTypeId：密钥类型的标识符。
+
+	pub struct KeyTypeId(pub [u8; 4])
+	
+	// Key type for Babe module
+	pub const BABE: KeyTypeId = KeyTypeId(*b"babe");
+	
+	// Key type for controlling an account in a Substrate runtime
+	pub const ACCOUNT: KeyTypeId = KeyTypeId(*b"acco");
+
+sr25519也是Substrate支持的加密算法。	
+
+stash账号是用来存储资金，controller是一个操作账号，用来控制和管理。
+
+session keys,会话密钥跟身份相关，主要是为了验证节点在不同场景下表明身份。
+
+### finality-grandpa
+
+首先，使用“block_import”函数创建一个区块导入包装。Grandpa worker需要与这个区块导入对象链接在一起，所以也会返回一个`LinkHalf`。所有导入的区块(从网络或consensus或其他方式)都必须通过这个包装器，否则consensus可能会以意想不到的方式中断。
+
+接下来，使用`LinkHalf`和本地配置去`run_grandpa_voter`。这需要一个“网络”实现。返回的future应该被驱动完成，并在后台完成区块确认。
+
+#### 改变出块节点集合
+
+在GRANDPA中更改出块节点集合背后的大致思想是，在某个点上，我们获得了当前集合可以完成的最大块高度的协议，一旦具有该高度的区块最终一致性，下一个集合将从那里获取。
+
+从技术上讲，这将被实现为一个投票规则，该规则表示，“如果B区块中的N个区块有变化的信号，那么只有当它们包含区块B时，才对长度为NUM(B) + N的链进行投票”。这种包含条件的逻辑计算起来很复杂，因为它需要任意地回溯到链的最后面。
+
+相反，我们跟踪到目前为止看到的所有信号的列表(跨越所有分支)，按它们将应用于的区块号升序排序。我们从不对大于最早的切换块编号(这是num(signal) + N)的链进行投票。在完成一个块时，我们根据信号块是否包含在新完成的链中，应用或修剪任何有信号的更改。
+
+### core下的rpc模块
+
+rpc的api包括
+
+- author
+	- author_submitExtrinsic：提交hex-encoded的外部固有给包含到区块中去。
+	- author_insertKey：插入一个key到keystore的文件中。
+	- author_rotateKeys：RPC调用返回生成第N个Session keys和其公钥。
+	- author_pendingExtrinsics：返回所有的pending的外部固有，可能按照发送人分组。
+	- author_removeExtrinsic：从池中移除给定的外部固有，临时禁止他们，以防止他们重新导入。
+- chain
+	- chain_getHeader: 区块头信息。
+	- chain_getBlock： 区块头和区块体信息。
+	- chain_getBlockHash： 第n个区块的hash。
+	- chain_getFinalizedHead： 最后一个被确认区块的hash。
+- state
+	- state_call：在某个区块的状态上调用一个合约。
+	- state_getKeys：返回带前缀的键，保持空以获取所有键。
+	- state_getStorage：在某个指定区块状态里，返回一个存储实体。
+	- state_getStorageHash：在某个区块状态里，返回一个存储实体的hash。
+	- state_getStorageSize：在某个区块状态里，返回一个存储实体的大小。
+	- state_getChildKeys：从一个子存储里返回带前缀的键，保持空以获取所有键。
+	- state_getChildStorage：在某个指定区块状态里，返回一个子存储实体。
+	- state_getChildStorageHash：在某个区块状态里，返回一个子存储实体的hash。
+	- state_getChildStorageSize：在某个区块状态里，返回一个子存储实体的大小。
+	- state_getMetadata：返回runtime的metadata作为一个opaque blob。
+	- state_getRuntimeVersion：获取runtime的版本。
+	- state_queryStorage：通过key来查询历史存储实体，从某个给定的区块开始，这个给定区块作为第二个参数。
+- system
+	- system_name：获取节点的实现名字，普通的字符串。
+	- system_version：获取节点实现的版本，是一个寓意版本的字符串。
+	- system_chain：获取链的类型，给一个字符串标识符。
+	- system_properties：获取特性的通用集合，是一个JSON对象，对链特征的定义。
+	- system_health：返回节点的健康状态。
+	- system_peers：返回节点现在链接的所有peers。
+	- system_networkState：返回节点现在网络状态。
+	- system_nodeRoles：返回节点现在运行扮演的角色。
+
+system的一些基础数据结构：
+
+	pub struct SystemInfo {
+		pub impl_name: String,
+		pub impl_version: String,
+		pub chain_name: String,
+		pub properties: Properties,
+	}
+	
+	pub struct Health {
+		pub peers: usize,
+		pub is_syncing: bool,
+		pub should_have_peers: bool,
+	}
+	
+	pub struct PeerInfo<Hash,Number> {
+		pub peer_id: String,
+		pub roles: String,
+		pub protocol_version: u32,
+		pub best_hash: Hash,
+		pub best_number: Number,
+	}
+	
+	pub enum NodeRole {
+		Full,
+		LightClient,
+		Authority,
+		UnknownRole(u8)
+	}
+	
+### core下的rpc-servers模块
+
+构建一个RpcHandler，包含所有请求的APIs，主要是开启start_http和start_ws两个方法。
+
+### core下的service模块
+
+聚合如下所需的组件去构建一个服务
+
+调用 `ServiceBuilder::new_full` 或者 `ServiceBuilder::new_light`，然后调用不同的`with_`方法去增加所需的组件去构建服务。
+
+- `with_select_chain` (ServiceBuilder::with_select_chain)
+- `with_import_queue` (ServiceBuilder::with_import_queue)
+- `with_network_protocol` (ServiceBuilder::with_network_protocol)
+- `with_finality_proof_provider` (ServiceBuilder::with_finality_proof_provider) 
+- `with_transaction_pool` (ServiceBuilder::with_transaction_pool)
+
+做完这些后，调用 `build`方法， (ServiceBuilder::build) 去构建服务。
+
+RPC handlers builder
+
+构建chain RPC handler。
+
+	fn build_chain(&self, subscriptions: rpc::Subscriptions) -> rpc::chain::Chain<TBackend, TExec, TBl, TRtApi>;
+
+构建state RPC handler。
+
+	fn build_state(&self, subscriptions: rpc::Subscriptions) -> rpc::state::State<TBackend, TExec, TBl, TRtApi>;
+
+RPC handlers builder给全节点。
+
+	pub struct FullRpcBuilder
+
+RPC handler builder给轻节点。
+
+	pub struct LightRpcBuilder
+	
+在`ServiceBuilder`上实现的`ServiceBuilderImport`，允许导入区块，当你给builder指定所有需要的组件。
+
+在`ServiceBuilder`上实现的`ServiceBuilderExport`，允许导出区块，当你给builder指定所有需要的组件。
+
+在`ServiceBuilder`上实现的`ServiceBuilderImport`，允许复原区块链，当你给builder指定所有需要的组件。
+
+	fn start_rpc
+	
+	rpc_servers::rpc_handler((
+		state::StateApi::to_delegate(state),
+		chain::ChainApi::to_delegate(chain),
+		author::AuthorApi::to_delegate(author),
+		system::SystemApi::to_delegate(chain),
+		rpc_extensions,
+	))
+
+
+service
+
+	pub struct Service
+	
+	pub struct SpawnTaskHandle // 一个handler用来在service中产生任务的
+	
+	pub trait AbstractService
+		type Block					//区块链的区块类型
+		type Backend					//客户端的后端存储
+		type CallExecutor			//如何执行来自运行时的调用
+		type RuntimeApi				//运行时提供的API
+		type SelectChain				//链选择的算法
+		type TransactionPoolApi		//交易池的API
+		type NetworkSpecialization	//网络指定化 ？ todo
+		fn telemetry_on_connect_stream()	//获取event流，用于在已经建立连接的events上telemetry。
+		fn telemetry()				//返回一个Telemetry的分享实例
+		fn spawn_task()				//在后台生成一个任务，该任务运行过去的future作为参数。
+		fn spawn_essential_task()	//在后台生成一个任务，该任务运行过去的future作为参数。给定的任务被认为是必需的，也就是说，如果它出错，我们就触发服务退出。
+		fn spawn_task_handle()		//一个handler用来在service中产生任务的
+		fn keystore()					//返回keystore用来存储keys
+		fn rpc_query()				//开启一个RPC请求
+		fn client()					//获取一个共享的客户端实例
+		fn select_chain()			//获取选择链的克隆
+		fn network()					//获取一个共享的网络实例
+		fn network_status()			//返回一个接收器，周期性接收网络的状态
+		fn transaction_pool()		//获取一个共享的交易池实例
+		fn on_exit()					//获取一个在退出时能解决的handle。
+		
+**Rust的消息传递mpsc（Multiple Producers Single Consumer）**
+
+Rust的通道（channel）可以把一个线程的消息（数据）传递到另外一个线程，从而让信息在不同的线程中流动，从而实现协作。通道的两端分别是发送者(Sender)和接收者(Receiver)，发送者负责从一个线程发送消息，接收者则在另一个线程中接收该消息。
+
+	use std::sync::mpsc;
+	use std::thread;
+	
+	fn main() {
+	    // 创建一个通道
+	    let (tx, rx): (mpsc::Sender<i32>, mpsc::Receiver<i32>) = 
+	        mpsc::channel();
+	
+	    // 创建线程用于发送消息
+	    thread::spawn(move || {
+	        // 发送一个消息，此处是数字id
+	        tx.send(1).unwrap();
+	    });
+	
+	    // 在主线程中接收子线程发送的消息并输出
+	    println!("receive {}", rx.recv().unwrap());
+	}
+	
+并不是所有类型的消息都可以通过通道发送，消息类型必须实现marker trait Send。Rust之所以这样强制要求，主要是为了解决并发安全的问题，再一次强调，安全是Rust考虑的重中之重。如果一个类型是Send，则表明它可以在线程间安全的转移所有权(ownership)，当所有权从一个线程转移到另一个线程后，同一时间就只会存在一个线程能访问它，这样就避免了数据竞争，从而做到线程安全。
+
+Rust的标准库其实提供了两种类型的通道：异步通道和同步通道。异步通道指的是：不管接收者是否正在接收消息，消息发送者在发送消息时都不会阻塞。
+
+不阻塞外，还有三个特征：
+
+- 通道是可以同时支持多个发送者的，通过clone的方式来实现。 这类似于Rc的共享机制。通道是可以同时支持多个发送者的，通过clone的方式来实现。 这类似于Rc的共享机制。
+- 异步通道具备消息缓存的功能，在此之后还能接收到这两个消息。缓存到内存耗完为止。
+- 消息发送和接收的顺序是一致的，满足先进先出原则。
+
+异步通道会在接收者`recv`方法阻塞当前线程，如果不阻塞，在多线程的情况下，发送的消息不会完全接收到。
+
+**同步通道**
+
+同步通道在使用上同异步通道一样，接收端也是一样的，唯一的区别在于发送端。
+	
+	// 创建一个同步通道
+	let (tx, rx): (mpsc::SyncSender<i32>, mpsc::Receiver<i32>) = mpsc::sync_channel(0);
+
+和前面的异步通道的没有什么区别，唯一不同的在于创建同步通道的那行代码。同步通道是sync_channel，对应的发送者也变成了SyncSender。和异步通道相比，存在两点不同：
+
+- 同步通道是需要指定缓存的消息个数的，但需要注意的是，最小可以是0，表示没有缓存。
+- 发送者是会被阻塞的。当通道的缓存队列不能再缓存消息时，发送者发送消息时，就会被阻塞。
+
+综合来看，异步通信，消息发送者一股脑发送，不管接收者是否能快速处理完，这样内存消耗就要考虑到。
+
+同步通信，发送者就要考虑这个问题了，不能给接收者造成太大压力。
+
+**send和sync**
+
+Send标记trait表明类型的所有权可以在线程间传递。几乎所有的Rust类型都是Send的，例外包括Rc<T>,如果Send，克隆了Rc<T>的值，并尝试将克隆的所有权转移到另外一个线程，这两个线程可能同时更新引用计数。Rc<T>是用于单线程场景。
+
+Sync标记trait表明一个实现了Sync的类型可以安全的在多个线程中拥有其值的引用。智能指针Rc<T>也不是Sync的。对于任意类型T，如果&T是Send的话，T就是Sync的。
+
+**Rust中共享内存和锁机制**
+
+- static
+
+Rust中static变量，其生命周期是整个应用程序，在内存中只存在一份实例。所有线程都能访问到。
+
+	static mut VAR: i32 = 5;
+
+const会在编译时内联到代码中，不会在某个固定的内存地址上，也不可修改，并不是内存共享的。
+
+- 堆
+
+如果要在各个线程中共享一个变量，除了在static，还可以把变量保存在堆上。
+
+基于Arc创建资源就是使用了堆。
+
+	use std::sync::Arc;
+	
+	fn main() {
+		let var : Var<i32> = Arc::new(5);
+	}
+
+在多个线程中使用变量，就需要解决两个问题？
+
+- 资源何时释放？
+- 线程如何安全的并发修改和读取？
+
+Rust用了引用计数的方式来解决第一个问题。使用同步手段来解决第二个问题。
+
+同步指的是线程之间的协作配合，以共同完成某个任务。需要注意共享资源的访问，访问资源的顺序。
+
+**控制访问的顺序（等待与通知）**
+
+	use std::sync::{Arc, Mutex, Condvar};
+	use std::thread;
+	
+	fn main() {
+	
+	    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+	    let pair2 = pair.clone();
+	
+	    // 创建一个新线程
+	    thread::spawn(move|| {
+	        let &(ref lock, ref cvar) = &*pair2;
+	        let mut started = lock.lock().unwrap();
+	        *started = true;
+	        cvar.notify_one();	//被通知，获得锁
+	        println!("notify main thread");
+	    });
+	
+	    // 等待新线程先运行
+	    let &(ref lock, ref cvar) = &*pair;
+	    let mut started = lock.lock().unwrap();
+	    while !*started {
+	        println!("before wait");
+	        started = cvar.wait(started).unwrap(); // 等待时，释放锁
+	        println!("after wait");
+	    }
+	}
+
+输出结果：
+
+	before wait
+	notify main thread
+	after wait
+	
+Mutex是Rust中的一种锁。Condvar和Mutex一同使用，有锁保护，Condvar并发是线程安全的。Condvar在等待时，会释放锁，被通知时，会重新获得锁，从而保证线程并发安全。
+
+pair创建锁是false的，新线程执行到carv被通知，下面主线程接着执行，started还是false，carv等待，释放锁。wait方法让当前线程等待，notify_one方法，让其他线程唤醒正在等待的线程。
+
+**控制访问顺序的机制（原子类型与锁）**
+
+原子类型是最简单的控制共享资源访问的一种机制。原子类型不需要开发者处理加锁和释放锁的问题，同时支持修改，读取等操作，还具备较高的并发性能。在标准库std::sync::atomic中，你将在里面看到Rust现有的原子类型，包括AtomicBool，AtomicIsize，AtomicPtr，AtomicUsize。这4个原子类型基本能满足百分之九十的共享资源安全访问的需要。
+
+	use std::thread;
+	use std::sync::Arc;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	
+	fn main() {
+	    let var : Arc<AtomicUsize> = Arc::new(AtomicUsize::new(5));
+	    let share_var = var.clone();
+	
+	    // 创建一个新线程
+	    let new_thread = thread::spawn(move|| {
+	        println!("share value in new thread: {}", share_var.load(Ordering::SeqCst));
+	        // 修改值
+	        share_var.store(9, Ordering::SeqCst);
+	    });
+	
+	    // 等待新建线程先执行
+	    new_thread.join().unwrap();
+	    println!("share value in main thread: {}", var.load(Ordering::SeqCst));
+	}
+	
+
+原子类型解决了90%的问题，剩下10%就需要锁Mutex来解决。Mutex是一种独占锁，同一时间只有一个线程能持有这个锁。这种锁会导致所有线程串行起来，保证了安全，效率低下。读多写少，没发并发读。
+
+另外一种读写锁的机制，std::sync::RwLock。
+
+
+Substrate中开启了哪些线程？
+
+- substrate/core/consensus/rhd/src/service.rs
+	- 启动一个关于当前线程执行器的BFT协议实例。共识服务，开启新的线程。
+- substrate/core/service/src/chain_ops.rs
+	- export_blocks和import_blocks两个宏，都会新建一个线程。
+- substrate/core/consensus/pow/src/lib.rs
+	- PoW开启挖矿，新建一个线程来挖矿。
+
+**获取block number**
+
+	let block_number = match self.resolve_block_number(at) {
+		Ok(block_number) => block_number,
+		Err(err) => return Either::Left(ready(Err(err))),
+	};
+	/// Resolves block number by id.
+	fn resolve_block_number(&self, at: &BlockId<B::Block>) -> Result<NumberFor<B>, B::Error> {
+		self.validated_pool.api().block_id_to_number(at)
+			.and_then(|number| number.ok_or_else(||
+				error::Error::InvalidBlockId(format!("{:?}", at)).into()))
+	}
+
+
+
+### Foreigh-Function Interface （FFI）
+
+外部函数接口(FFI)是一种机制，通过这种机制，用一种编程语言编写的程序可以调用例程或使用用另一种编程语言编写的服务。
+
+
+### Substrate runtime interface
+
+这个crate提供了运行时接口的类型，特征和宏。一个运行时接口是Substrate运行时和Substrate节点之间的固定接口。对于native运行时，接口映射到实现的直接函数调用。对于wasm运行时，接口映射到外部函数调用，这些外部函数由wasm执行器导出，它们映射到与native调用相同的实现。
+
+**运行时接口使用的类型**
+
+在运行时接口中用作参数或者返回值的任何类型都需要实现[`RIType`]。关联的类型`FFIType`是FFI函数中用来表示实际类型的。当从wasm运行时调用节点时，FFI函数定义将会被使用。
+
+Trait被用来从一个类型转换成相应的[`RIType::FFIType`]。根据在函数签名中使用类型的位置和方式，需要实现以下特征的组合。
+
+- 1.传递函数参数：[`wasm::IntoFFIValue`] and [`host::FromFFIValue`]
+- 2.作为function返回值：[`wasm::FromFFIValue`] and [`host::IntoFFIValue`]
+- 3.传递可变函数参数：[`host::IntoPreallocatedFFIValue`]
+
+这些特征是为大多数常见类型实现的，比如 `[T]` `Vec<T>`,数组和原始类型。
+
+对于自定义类型，我们提供了[`PassBy`]`(pass_by::PassBy)`特征和策略，它们定义了如何在wasm运行时和节点之间传递类型。每个策略还提供给了一个派生宏来简化实现。
+
+**性能**
+
+为了在调用节点时不浪费性能，在wasm运行时和节点之间传递参数时，并不是所有类型都进行了SCALE编码。对于大多数类型的原始字节，如`Vec<u8>`,`[u8]`,`[u8;N]`，我们直接传递它们，而不是在它们前面进行SCALE编码。每种类型的[`RIType`]都提供了关于如何传递数据的更多信息。
+
+
+### 共识模块
+
+区块状态
+
+	pub enum BlockStatus {
+		Queued,				//已经加入导入队列
+		InChainWithState,	//已经在区块链中，状态是可用的
+		InChainPruned,		//在区块链中，但是状态不可用
+		KnowBad,				//区块或者父区块是坏的
+		Unknown,				//既不在队列也不在区块链中
+	}
+	
+Import Queue，负责验证和导入区块，是在同步区块和导入之间的协调服务。每个共识模式都有其区块验证的需求，有些算法可以并行验证，而有些只能够序列执行。
+
+`ImportQueue` trait允许那些验证策略被实例化，有 `BasicQueue`,`BasicVerifier` trait允许连续队列被简单实例化。
 
 
 
